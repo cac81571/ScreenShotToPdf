@@ -13,8 +13,11 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
+import java.awt.datatransfer.Clipboard;
+import java.awt.datatransfer.StringSelection;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,6 +47,14 @@ public class MigrationScreenshotPdfApp {
     /** 履歴ファイルを保存するディレクトリ（ユーザーホーム直下の .screenShotToPdf） */
     private static final Path HISTORY_DIR = Paths.get(
             System.getProperty("user.home"), ".screenShotToPdf");
+    /** AIプロンプトファイルを格納するディレクトリ */
+    private static final Path AI_PROMPT_DIR = HISTORY_DIR.resolve("aiPrompt");
+    /** AIプロンプトコンボボックスの固定幅（ピクセル） */
+    private static final int AI_PROMPT_COMBO_WIDTH = 300;
+    /** 所定フォルダに配置するAIプロンプトのサンプルファイル名（リソース名） */
+    private static final List<String> AI_PROMPT_SAMPLE_NAMES = Arrays.asList(
+            "マイグレーション比較チェック.txt",
+            "サンプル.txt");
 
     /** 移行前フォルダのパス入力・選択用コンボボックス */
     private JComboBox<String> beforeFolderCombo;
@@ -51,6 +62,8 @@ public class MigrationScreenshotPdfApp {
     private JComboBox<String> afterFolderCombo;
     /** PDF作成を実行するボタン */
     private JButton createPdfButton;
+    /** AIプロンプトファイル選択用コンボボックス */
+    private JComboBox<String> aiPromptCombo;
     /** ログメッセージを表示するテキストエリア */
     private JTextArea logArea;
     /** 移行前の画像ファイル名リストのモデル */
@@ -80,6 +93,8 @@ public class MigrationScreenshotPdfApp {
      * メインウィンドウを構築し、フォルダ選択・リスト・PDF作成ボタン・ログ領域を配置して表示する。
      */
     void run() {
+        List<String> copiedSamples = ensureAiPromptSamples();
+
         JFrame frame = new JFrame("マイグレーション スクリーンショット PDF 作成ツール");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(720, 520);
@@ -161,8 +176,23 @@ public class MigrationScreenshotPdfApp {
         main.add(listPanel, BorderLayout.CENTER);
 
         JPanel bottom = new JPanel(new BorderLayout(0, 6));
-        JPanel buttonRow = new JPanel(new BorderLayout());
+        JPanel buttonRow = new JPanel(new BorderLayout(8, 0));
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JPanel aiPromptPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        aiPromptCombo = new JComboBox<>(loadAiPromptFiles().toArray(new String[0]));
+        aiPromptCombo.setMaximumRowCount(20);
+        int comboH = (int) aiPromptCombo.getPreferredSize().getHeight();
+        aiPromptCombo.setPreferredSize(new Dimension(AI_PROMPT_COMBO_WIDTH, comboH));
+        aiPromptCombo.setMaximumSize(new Dimension(AI_PROMPT_COMBO_WIDTH, comboH));
+        if (aiPromptCombo.getItemCount() > 0) {
+            aiPromptCombo.setSelectedIndex(0);
+        }
+        JButton clipboardBtn = new JButton("クリップボード出力");
+        clipboardBtn.addActionListener(e -> copySelectedAiPromptToClipboard());
+        aiPromptPanel.add(new JLabel("AIプロンプト:"));
+        aiPromptPanel.add(aiPromptCombo);
+        aiPromptPanel.add(clipboardBtn);
+        buttonRow.add(aiPromptPanel, BorderLayout.WEST);
         createPdfButton = new JButton("PDF作成");
         createPdfButton.addActionListener(e -> createPdf());
         buttonRow.add(createPdfButton, BorderLayout.EAST);
@@ -174,6 +204,15 @@ public class MigrationScreenshotPdfApp {
         logArea.setWrapStyleWord(true);
         bottom.add(new JScrollPane(logArea), BorderLayout.SOUTH);
         main.add(bottom, BorderLayout.SOUTH);
+
+        for (String name : copiedSamples) {
+            log("AIプロンプト サンプルを配置しました: " + name);
+        }
+        for (int i = 0; i < aiPromptCombo.getItemCount(); i++) {
+            String fileName = aiPromptCombo.getItemAt(i);
+            String absolutePath = AI_PROMPT_DIR.resolve(fileName).toAbsolutePath().toString();
+            log("AIプロンプト リストに追加: " + absolutePath);
+        }
 
         frame.getContentPane().add(main);
         frame.setVisible(true);
@@ -355,6 +394,81 @@ public class MigrationScreenshotPdfApp {
                     .collect(Collectors.toList()));
             Files.write(f, updated, StandardCharsets.UTF_8);
         } catch (IOException ignored) {
+        }
+    }
+
+    /**
+     * 所定フォルダ（~/.screenShotToPdf/aiPrompt/）を作成し、未配置のサンプルAIプロンプトファイルをリソースからコピーする。既存ファイルは上書きしない。
+     *
+     * @return コピーしたファイルの絶対パスのリスト（ログ出力用）
+     */
+    private static List<String> ensureAiPromptSamples() {
+        List<String> copied = new ArrayList<>();
+        try {
+            Files.createDirectories(AI_PROMPT_DIR);
+        } catch (IOException e) {
+            return copied;
+        }
+        for (String fileName : AI_PROMPT_SAMPLE_NAMES) {
+            Path target = AI_PROMPT_DIR.resolve(fileName);
+            if (Files.exists(target)) {
+                continue;
+            }
+            String resourcePath = "/aiPrompt/" + fileName;
+            try (InputStream in = MigrationScreenshotPdfApp.class.getResourceAsStream(resourcePath)) {
+                if (in != null) {
+                    Files.copy(in, target);
+                    copied.add(target.toAbsolutePath().toString());
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        return copied;
+    }
+
+    /**
+     * AIプロンプト用ディレクトリ（~/.screenShotToPdf/aiPrompt/）配下のファイル名一覧を取得する。
+     * ディレクトリが存在しない場合は空リストを返す。
+     *
+     * @return ファイル名のリスト（ソート済み）
+     */
+    private static List<String> loadAiPromptFiles() {
+        if (!Files.isDirectory(AI_PROMPT_DIR)) {
+            return new ArrayList<>();
+        }
+        try {
+            return Files.list(AI_PROMPT_DIR)
+                    .filter(Files::isRegularFile)
+                    .map(p -> p.getFileName().toString())
+                    .sorted()
+                    .collect(Collectors.toList());
+        } catch (IOException e) {
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * AIプロンプトコンボで選択されているファイルの内容をクリップボードにコピーする。
+     * 未選択またはファイル読み込み失敗時はログにメッセージを出す。
+     */
+    private void copySelectedAiPromptToClipboard() {
+        String fileName = (String) aiPromptCombo.getSelectedItem();
+        if (fileName == null || fileName.isEmpty()) {
+            log("AIプロンプト: 項目を選択してください。");
+            return;
+        }
+        Path file = AI_PROMPT_DIR.resolve(fileName);
+        if (!Files.isRegularFile(file)) {
+            log("AIプロンプト: ファイルが見つかりません: " + fileName);
+            return;
+        }
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+            clipboard.setContents(new StringSelection(content), null);
+            log("AIプロンプトをクリップボードにコピーしました: " + fileName);
+        } catch (IOException e) {
+            log("AIプロンプトの読み込みに失敗しました: " + e.getMessage());
         }
     }
 
