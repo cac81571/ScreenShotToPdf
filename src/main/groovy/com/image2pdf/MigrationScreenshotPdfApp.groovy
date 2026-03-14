@@ -12,6 +12,7 @@ import com.formdev.flatlaf.FlatLightLaf
 
 import javax.swing.*
 import javax.swing.border.EmptyBorder
+import javax.swing.border.TitledBorder
 import java.awt.*
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -34,7 +35,14 @@ class MigrationScreenshotPdfApp {
     private JComboBox<String> afterFolderCombo
     private JButton createPdfButton
     private JTextArea logArea
+    private DefaultListModel<String> beforeListModel
+    private DefaultListModel<String> afterListModel
+    private JList<String> beforeList
+    private JList<String> afterList
+    private java.util.List<Path> beforeFilePaths = []
+    private java.util.List<Path> afterFilePaths = []
 
+    private static final String BLANK_PAGE_LABEL = '(空白ページ)'
     private static final java.util.List<String> IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']
     private static final int HISTORY_MAX = 30
     private static final Path HISTORY_DIR = Paths.get(System.getProperty('user.home'), '.screenShotToPdf')
@@ -42,7 +50,7 @@ class MigrationScreenshotPdfApp {
     void run() {
         def frame = new JFrame('マイグレーション スクリーンショット → PDF')
         frame.defaultCloseOperation = JFrame.EXIT_ON_CLOSE
-        frame.setSize(640, 380)
+        frame.setSize(720, 520)
         frame.setLocationRelativeTo(null)
 
         def main = new JPanel(new BorderLayout(10, 10))
@@ -60,11 +68,59 @@ class MigrationScreenshotPdfApp {
             cb.maximumSize = new Dimension(Integer.MAX_VALUE, h)
         }
 
+        def extractBtn = new JButton('ファイル抽出')
+        extractBtn.addActionListener { extractImageFilesFromBoth() }
+
         form.add(createRow('移行前フォルダ:', beforeFolderCombo))
         form.add(Box.createVerticalStrut(8))
         form.add(createRow('移行後フォルダ:', afterFolderCombo))
+        form.add(Box.createVerticalStrut(8))
+        def extractRow = new JPanel(new BorderLayout())
+        extractRow.add(extractBtn, BorderLayout.EAST)
+        form.add(extractRow)
 
         main.add(form, BorderLayout.NORTH)
+
+        beforeListModel = new DefaultListModel<>()
+        afterListModel = new DefaultListModel<>()
+        beforeList = new JList<>(beforeListModel)
+        afterList = new JList<>(afterListModel)
+        beforeList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+        afterList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+        beforeList.visibleRowCount = 8
+        afterList.visibleRowCount = 8
+        def listPanel = new JPanel(new GridLayout(1, 2, 10, 0))
+        def beforeListPanel = new JPanel(new BorderLayout(2, 4))
+        beforeListPanel.border = new TitledBorder(new EmptyBorder(2, 4, 2, 4), '移行前 画像ファイル', TitledBorder.LEFT, TitledBorder.TOP)
+        beforeListPanel.add(new JScrollPane(beforeList), BorderLayout.CENTER)
+        def beforeBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2))
+        def beforeDeleteBtn = new JButton('選択削除')
+        beforeDeleteBtn.addActionListener { removeSelectedFromList(true) }
+        def beforeBlankBeforeBtn = new JButton('前に空白追加')
+        beforeBlankBeforeBtn.addActionListener { addBlankPageToList(true, true) }
+        def beforeBlankAfterBtn = new JButton('後ろに空白追加')
+        beforeBlankAfterBtn.addActionListener { addBlankPageToList(true, false) }
+        beforeBtnPanel.add(beforeDeleteBtn)
+        beforeBtnPanel.add(beforeBlankBeforeBtn)
+        beforeBtnPanel.add(beforeBlankAfterBtn)
+        beforeListPanel.add(beforeBtnPanel, BorderLayout.SOUTH)
+        def afterListPanel = new JPanel(new BorderLayout(2, 4))
+        afterListPanel.border = new TitledBorder(new EmptyBorder(2, 4, 2, 4), '移行後 画像ファイル', TitledBorder.LEFT, TitledBorder.TOP)
+        afterListPanel.add(new JScrollPane(afterList), BorderLayout.CENTER)
+        def afterBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2))
+        def afterDeleteBtn = new JButton('選択削除')
+        afterDeleteBtn.addActionListener { removeSelectedFromList(false) }
+        def afterBlankBeforeBtn = new JButton('前に空白追加')
+        afterBlankBeforeBtn.addActionListener { addBlankPageToList(false, true) }
+        def afterBlankAfterBtn = new JButton('後ろに空白追加')
+        afterBlankAfterBtn.addActionListener { addBlankPageToList(false, false) }
+        afterBtnPanel.add(afterDeleteBtn)
+        afterBtnPanel.add(afterBlankBeforeBtn)
+        afterBtnPanel.add(afterBlankAfterBtn)
+        afterListPanel.add(afterBtnPanel, BorderLayout.SOUTH)
+        listPanel.add(beforeListPanel)
+        listPanel.add(afterListPanel)
+        main.add(listPanel, BorderLayout.CENTER)
 
         def bottom = new JPanel(new BorderLayout(0, 6))
         def buttonRow = new JPanel(new BorderLayout())
@@ -74,12 +130,12 @@ class MigrationScreenshotPdfApp {
         buttonRow.add(createPdfButton, BorderLayout.EAST)
         bottom.add(buttonRow, BorderLayout.NORTH)
 
-        logArea = new JTextArea(8, 40)
+        logArea = new JTextArea(6, 40)
         logArea.editable = false
         logArea.lineWrap = true
         logArea.wrapStyleWord = true
-        bottom.add(new JScrollPane(logArea), BorderLayout.CENTER)
-        main.add(bottom, BorderLayout.CENTER)
+        bottom.add(new JScrollPane(logArea), BorderLayout.SOUTH)
+        main.add(bottom, BorderLayout.SOUTH)
 
         frame.contentPane.add(main)
         frame.visible = true
@@ -100,6 +156,65 @@ class MigrationScreenshotPdfApp {
         row.add(Box.createHorizontalStrut(8))
         row.add(field)
         row
+    }
+
+    private void extractImageFilesFromBoth() {
+        extractImageFiles(true)
+        extractImageFiles(false)
+    }
+
+    private void removeSelectedFromList(boolean isBefore) {
+        def list = isBefore ? beforeList : afterList
+        def model = isBefore ? beforeListModel : afterListModel
+        def paths = isBefore ? beforeFilePaths : afterFilePaths
+        def indices = list.selectedIndices
+        if (indices.length == 0) {
+            log((isBefore ? '移行前' : '移行後') + ': 削除する項目を選択してください。')
+            return
+        }
+        def toRemove = indices.toList().sort().reverse()
+        toRemove.each { int idx ->
+            model.remove(idx)
+            paths.remove(idx)
+        }
+        log((isBefore ? '移行前' : '移行後') + ": ${toRemove.size()} 件を削除しました。")
+    }
+
+    private void addBlankPageToList(boolean isBefore, boolean insertBefore) {
+        def list = isBefore ? beforeList : afterList
+        def model = isBefore ? beforeListModel : afterListModel
+        def paths = isBefore ? beforeFilePaths : afterFilePaths
+        int insertIndex = insertBefore
+            ? (list.selectedIndex >= 0 ? list.selectedIndex : 0)
+            : (list.selectedIndex >= 0 ? list.selectedIndex + 1 : model.size())
+        model.insertElementAt(BLANK_PAGE_LABEL, insertIndex)
+        paths.add(insertIndex, null)
+        log((isBefore ? '移行前' : '移行後') + 'に空白ページを追加しました。')
+    }
+
+    private void extractImageFiles(boolean isBefore) {
+        def pathStr = isBefore ? comboText(beforeFolderCombo)?.trim() : comboText(afterFolderCombo)?.trim()
+        if (!pathStr) {
+            log(isBefore ? '移行前フォルダを指定してください。' : '移行後フォルダを指定してください。')
+            return
+        }
+        def dir = Paths.get(pathStr)
+        if (!Files.isDirectory(dir)) {
+            log("フォルダが存在しません: $pathStr")
+            return
+        }
+        def files = listImageFiles(dir).sort()
+        def model = isBefore ? beforeListModel : afterListModel
+        def paths = isBefore ? beforeFilePaths : afterFilePaths
+        model.clear()
+        paths.clear()
+        files.each { Path p ->
+            model.addElement(p.fileName.toString())
+            paths.add(p)
+        }
+        if (isBefore) saveToHistory('before_folders', pathStr)
+        else saveToHistory('after_folders', pathStr)
+        log((isBefore ? '移行前' : '移行後') + ": ${files.size()} 件の画像を抽出しました。")
     }
 
     private static java.util.List<String> loadHistory(String fileName) {
@@ -129,41 +244,32 @@ class MigrationScreenshotPdfApp {
     }
 
     private void createPdf() {
-        def beforePath = comboText(beforeFolderCombo)?.trim()
-        def afterPath = comboText(afterFolderCombo)?.trim()
-
-        if (!beforePath) {
-            log('移行前フォルダを指定してください。')
+        if (beforeFilePaths.isEmpty() && afterFilePaths.isEmpty()) {
+            log('ファイルリストが空です。移行前・移行後で「ファイル抽出」を実行してください。')
             return
         }
-        if (!afterPath) {
-            log('移行後フォルダを指定してください。')
-            return
-        }
-
-        def beforeDir = Paths.get(beforePath)
-        def afterDir = Paths.get(afterPath)
-
-        if (!Files.isDirectory(beforeDir)) {
-            log("移行前フォルダが存在しません: $beforePath")
-            return
-        }
-        if (!Files.isDirectory(afterDir)) {
-            log("移行後フォルダが存在しません: $afterPath")
+        def maxCount = Math.max(beforeFilePaths.size(), afterFilePaths.size())
+        if (maxCount == 0) {
+            log('画像ファイルが1件もありません。')
             return
         }
 
-        // 移行前フォルダの親フォルダに「移行前フォルダ名.pdf」で出力
-        def outputPath = beforeDir.parent.resolve(beforeDir.fileName.toString() + '.pdf').toString()
+        def beforePathStr = comboText(beforeFolderCombo)?.trim()
+        if (!beforePathStr) {
+            log('PDFの出力先を決めるため、移行前フォルダを指定してください。')
+            return
+        }
+        def beforeFolderPath = Paths.get(beforePathStr)
+        def outputDir = beforeFolderPath.parent
+        def baseName = beforeFolderPath.fileName.toString()
+        def outputPath = outputDir.resolve(baseName + '.pdf').toString()
 
         createPdfButton.enabled = false
         log('PDFを作成しています...')
 
         Thread.start {
             try {
-                buildPdf(beforeDir, afterDir, outputPath)
-                saveToHistory('before_folders', beforePath)
-                saveToHistory('after_folders', afterPath)
+                buildPdfFromLists(beforeFilePaths, afterFilePaths, outputPath)
                 SwingUtilities.invokeLater {
                     createPdfButton.enabled = true
                     log("PDFを作成しました: $outputPath")
@@ -188,13 +294,10 @@ class MigrationScreenshotPdfApp {
         } catch (Exception ignored) {}
     }
 
-    private void buildPdf(Path beforeDir, Path afterDir, String outputPath) {
-        def beforeFiles = listImageFiles(beforeDir).sort()
-        def afterFiles = listImageFiles(afterDir).sort()
-
+    private void buildPdfFromLists(java.util.List<Path> beforeFiles, java.util.List<Path> afterFiles, String outputPath) {
         def maxCount = Math.max(beforeFiles.size(), afterFiles.size())
         if (maxCount == 0) {
-            throw new IllegalStateException('いずれのフォルダにも画像ファイルが見つかりません。')
+            throw new IllegalStateException('画像ファイルが1件もありません。')
         }
 
         def doc = new Document(PageSize.A4, 18, 18, 18, 18)
@@ -208,16 +311,26 @@ class MigrationScreenshotPdfApp {
             if (i > 0) doc.newPage()
             // 奇数ページ: 移行前
             if (i < beforeFiles.size()) {
-                addImagePage(doc, beforeFiles[i].toAbsolutePath().toString(), pageWidth, pageHeight)
+                def path = beforeFiles[i]
+                if (path != null) {
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageWidth, pageHeight)
+                } else {
+                    addBlankPage(doc)
+                }
             } else {
-                doc.newPage()
+                addBlankPage(doc)
             }
             doc.newPage()
             // 偶数ページ: 移行後
             if (i < afterFiles.size()) {
-                addImagePage(doc, afterFiles[i].toAbsolutePath().toString(), pageWidth, pageHeight)
+                def path = afterFiles[i]
+                if (path != null) {
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageWidth, pageHeight)
+                } else {
+                    addBlankPage(doc)
+                }
             } else {
-                doc.newPage()
+                addBlankPage(doc)
             }
         }
 
@@ -235,6 +348,11 @@ class MigrationScreenshotPdfApp {
     private static String getExtension(String name) {
         def i = name.lastIndexOf('.')
         return i >= 0 ? name.substring(i) : ''
+    }
+
+    private static void addBlankPage(Document doc) {
+        def font = new Font(Font.HELVETICA, 10, Font.NORMAL)
+        doc.add(new Paragraph(BLANK_PAGE_LABEL, font))
     }
 
     private void addImagePage(Document doc, String imagePath, Double pageWidth, Double pageHeight) {
