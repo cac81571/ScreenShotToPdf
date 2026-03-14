@@ -7,20 +7,20 @@ import com.lowagie.text.Font;
 import com.lowagie.text.Image;
 import com.lowagie.text.PageSize;
 import com.lowagie.text.Paragraph;
+import com.lowagie.text.pdf.BaseFont;
 import com.lowagie.text.pdf.PdfWriter;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
-import java.awt.datatransfer.Clipboard;
-import java.awt.datatransfer.StringSelection;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * システムマイグレーションのスクリーンショットを
@@ -37,7 +38,7 @@ import java.util.stream.Collectors;
  */
 public class MigrationScreenshotPdfApp {
 
-    /** 空白ページとしてリストに表示するラベル文字列 */
+    /** 空白ページとしてリストに表示するラベル（UI用・PDF用とも日本語） */
     private static final String BLANK_PAGE_LABEL = "(空白ページ)";
     /** 画像として扱うファイル拡張子の一覧 */
     private static final List<String> IMAGE_EXTENSIONS = Arrays.asList(
@@ -47,14 +48,9 @@ public class MigrationScreenshotPdfApp {
     /** 履歴ファイルを保存するディレクトリ（ユーザーホーム直下の .screenShotToPdf） */
     private static final Path HISTORY_DIR = Paths.get(
             System.getProperty("user.home"), ".screenShotToPdf");
-    /** AIプロンプトファイルを格納するディレクトリ */
-    private static final Path AI_PROMPT_DIR = HISTORY_DIR.resolve("aiPrompt");
-    /** AIプロンプトコンボボックスの固定幅（ピクセル） */
-    private static final int AI_PROMPT_COMBO_WIDTH = 300;
-    /** 所定フォルダに配置するAIプロンプトのサンプルファイル名（リソース名） */
-    private static final List<String> AI_PROMPT_SAMPLE_NAMES = Arrays.asList(
-            "マイグレーション比較チェック.txt",
-            "サンプル.txt");
+
+    /** PDF用テキストフォント（日本語対応を試行し、失敗時は Helvetica）。null の場合は都度取得。 */
+    private static Font pdfTextFont;
 
     /** 移行前フォルダのパス入力・選択用コンボボックス */
     private JComboBox<String> beforeFolderCombo;
@@ -62,8 +58,6 @@ public class MigrationScreenshotPdfApp {
     private JComboBox<String> afterFolderCombo;
     /** PDF作成を実行するボタン */
     private JButton createPdfButton;
-    /** AIプロンプトファイル選択用コンボボックス */
-    private JComboBox<String> aiPromptCombo;
     /** ログメッセージを表示するテキストエリア */
     private JTextArea logArea;
     /** 移行前の画像ファイル名リストのモデル */
@@ -93,8 +87,6 @@ public class MigrationScreenshotPdfApp {
      * メインウィンドウを構築し、フォルダ選択・リスト・PDF作成ボタン・ログ領域を配置して表示する。
      */
     void run() {
-        List<String> copiedSamples = ensureAiPromptSamples();
-
         JFrame frame = new JFrame("マイグレーション スクリーンショット PDF 作成ツール");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(720, 520);
@@ -178,21 +170,6 @@ public class MigrationScreenshotPdfApp {
         JPanel bottom = new JPanel(new BorderLayout(0, 6));
         JPanel buttonRow = new JPanel(new BorderLayout(8, 0));
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        JPanel aiPromptPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        aiPromptCombo = new JComboBox<>(loadAiPromptFiles().toArray(new String[0]));
-        aiPromptCombo.setMaximumRowCount(20);
-        int comboH = (int) aiPromptCombo.getPreferredSize().getHeight();
-        aiPromptCombo.setPreferredSize(new Dimension(AI_PROMPT_COMBO_WIDTH, comboH));
-        aiPromptCombo.setMaximumSize(new Dimension(AI_PROMPT_COMBO_WIDTH, comboH));
-        if (aiPromptCombo.getItemCount() > 0) {
-            aiPromptCombo.setSelectedIndex(0);
-        }
-        JButton clipboardBtn = new JButton("クリップボード出力");
-        clipboardBtn.addActionListener(e -> copySelectedAiPromptToClipboard());
-        aiPromptPanel.add(new JLabel("AIプロンプト:"));
-        aiPromptPanel.add(aiPromptCombo);
-        aiPromptPanel.add(clipboardBtn);
-        buttonRow.add(aiPromptPanel, BorderLayout.WEST);
         createPdfButton = new JButton("PDF作成");
         createPdfButton.addActionListener(e -> createPdf());
         buttonRow.add(createPdfButton, BorderLayout.EAST);
@@ -204,15 +181,6 @@ public class MigrationScreenshotPdfApp {
         logArea.setWrapStyleWord(true);
         bottom.add(new JScrollPane(logArea), BorderLayout.SOUTH);
         main.add(bottom, BorderLayout.SOUTH);
-
-        for (String name : copiedSamples) {
-            log("AIプロンプト サンプルを配置しました: " + name);
-        }
-        for (int i = 0; i < aiPromptCombo.getItemCount(); i++) {
-            String fileName = aiPromptCombo.getItemAt(i);
-            String absolutePath = AI_PROMPT_DIR.resolve(fileName).toAbsolutePath().toString();
-            log("AIプロンプト リストに追加: " + absolutePath);
-        }
 
         frame.getContentPane().add(main);
         frame.setVisible(true);
@@ -398,81 +366,6 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * 所定フォルダ（~/.screenShotToPdf/aiPrompt/）を作成し、未配置のサンプルAIプロンプトファイルをリソースからコピーする。既存ファイルは上書きしない。
-     *
-     * @return コピーしたファイルの絶対パスのリスト（ログ出力用）
-     */
-    private static List<String> ensureAiPromptSamples() {
-        List<String> copied = new ArrayList<>();
-        try {
-            Files.createDirectories(AI_PROMPT_DIR);
-        } catch (IOException e) {
-            return copied;
-        }
-        for (String fileName : AI_PROMPT_SAMPLE_NAMES) {
-            Path target = AI_PROMPT_DIR.resolve(fileName);
-            if (Files.exists(target)) {
-                continue;
-            }
-            String resourcePath = "/aiPrompt/" + fileName;
-            try (InputStream in = MigrationScreenshotPdfApp.class.getResourceAsStream(resourcePath)) {
-                if (in != null) {
-                    Files.copy(in, target);
-                    copied.add(target.toAbsolutePath().toString());
-                }
-            } catch (IOException ignored) {
-            }
-        }
-        return copied;
-    }
-
-    /**
-     * AIプロンプト用ディレクトリ（~/.screenShotToPdf/aiPrompt/）配下のファイル名一覧を取得する。
-     * ディレクトリが存在しない場合は空リストを返す。
-     *
-     * @return ファイル名のリスト（ソート済み）
-     */
-    private static List<String> loadAiPromptFiles() {
-        if (!Files.isDirectory(AI_PROMPT_DIR)) {
-            return new ArrayList<>();
-        }
-        try {
-            return Files.list(AI_PROMPT_DIR)
-                    .filter(Files::isRegularFile)
-                    .map(p -> p.getFileName().toString())
-                    .sorted()
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            return new ArrayList<>();
-        }
-    }
-
-    /**
-     * AIプロンプトコンボで選択されているファイルの内容をクリップボードにコピーする。
-     * 未選択またはファイル読み込み失敗時はログにメッセージを出す。
-     */
-    private void copySelectedAiPromptToClipboard() {
-        String fileName = (String) aiPromptCombo.getSelectedItem();
-        if (fileName == null || fileName.isEmpty()) {
-            log("AIプロンプト: 項目を選択してください。");
-            return;
-        }
-        Path file = AI_PROMPT_DIR.resolve(fileName);
-        if (!Files.isRegularFile(file)) {
-            log("AIプロンプト: ファイルが見つかりません: " + fileName);
-            return;
-        }
-        try {
-            String content = Files.readString(file, StandardCharsets.UTF_8);
-            Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-            clipboard.setContents(new StringSelection(content), null);
-            log("AIプロンプトをクリップボードにコピーしました: " + fileName);
-        } catch (IOException e) {
-            log("AIプロンプトの読み込みに失敗しました: " + e.getMessage());
-        }
-    }
-
-    /**
      * 移行前・移行後のリストを元に PDF を生成する。
      * 出力先は移行前フォルダの親ディレクトリに「移行前フォルダ名.pdf」で保存し、
      * 作成後にエクスプローラーでそのフォルダを開く。処理は別スレッドで実行する。
@@ -488,15 +381,29 @@ public class MigrationScreenshotPdfApp {
             return;
         }
 
-        String beforePathStr = comboText(beforeFolderCombo);
-        if (beforePathStr != null) beforePathStr = beforePathStr.trim();
-        if (beforePathStr == null || beforePathStr.isEmpty()) {
-            log("PDFの出力先を決めるため、移行前フォルダを指定してください。");
-            return;
+        Path outputDir;
+        String baseName;
+        if (!beforeFilePaths.isEmpty()) {
+            String beforePathStr = comboText(beforeFolderCombo);
+            if (beforePathStr != null) beforePathStr = beforePathStr.trim();
+            if (beforePathStr == null || beforePathStr.isEmpty()) {
+                log("PDFの出力先を決めるため、移行前フォルダを指定してください。");
+                return;
+            }
+            Path beforeFolderPath = Paths.get(beforePathStr);
+            outputDir = beforeFolderPath.getParent();
+            baseName = beforeFolderPath.getFileName().toString();
+        } else {
+            String afterPathStr = comboText(afterFolderCombo);
+            if (afterPathStr != null) afterPathStr = afterPathStr.trim();
+            if (afterPathStr == null || afterPathStr.isEmpty()) {
+                log("PDFの出力先を決めるため、移行後フォルダを指定してください。");
+                return;
+            }
+            Path afterFolderPath = Paths.get(afterPathStr);
+            outputDir = afterFolderPath.getParent();
+            baseName = afterFolderPath.getFileName().toString();
         }
-        Path beforeFolderPath = Paths.get(beforePathStr);
-        Path outputDir = beforeFolderPath.getParent();
-        String baseName = beforeFolderPath.getFileName().toString();
         String outputPath = outputDir.resolve(baseName + ".pdf").toString();
 
         createPdfButton.setEnabled(false);
@@ -537,8 +444,9 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * 移行前・移行後のファイルパスリストから、奇数ページに移行前・偶数ページに移行後を配置した
-     * A4 PDF を生成する。対応する要素がない側は空白ページで埋める。
+     * 移行前・移行後のファイルパスリストから A4 PDF を生成する。
+     * 両方に要素がある場合は奇数ページに移行前・偶数ページに移行後を交互に配置する。
+     * 片方だけ0件の場合は、もう片方のリストのみを連続して出力する。
      *
      * @param beforeFiles 移行前の画像パス（null 要素は空白ページ）
      * @param afterFiles  移行後の画像パス（null 要素は空白ページ）
@@ -547,42 +455,69 @@ public class MigrationScreenshotPdfApp {
      */
     private void buildPdfFromLists(List<Path> beforeFiles, List<Path> afterFiles, String outputPath)
             throws Exception {
-        int maxCount = Math.max(beforeFiles.size(), afterFiles.size());
-        if (maxCount == 0) {
+        int beforeSize = beforeFiles.size();
+        int afterSize = afterFiles.size();
+        if (beforeSize == 0 && afterSize == 0) {
             throw new IllegalStateException("画像ファイルが1件もありません。");
         }
 
         Document doc = new Document(PageSize.A4, 18, 18, 18, 18);
-        PdfWriter writer = PdfWriter.getInstance(doc, new FileOutputStream(outputPath));
+        PdfWriter.getInstance(doc, new FileOutputStream(outputPath));
         doc.open();
 
         float pageWidth = doc.getPageSize().getWidth() - doc.leftMargin() - doc.rightMargin();
         float pageHeight = doc.getPageSize().getHeight() - doc.topMargin() - doc.bottomMargin();
+        double pageW = pageWidth;
+        double pageH = pageHeight;
 
-        for (int i = 0; i < maxCount; i++) {
-            if (i > 0) doc.newPage();
-            // 奇数ページ: 移行前
-            if (i < beforeFiles.size()) {
+        if (afterSize == 0) {
+            // 移行後のみ0件 → 移行前だけを連続で出力
+            for (int i = 0; i < beforeSize; i++) {
+                if (i > 0) doc.newPage();
                 Path path = beforeFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), (double) pageWidth, (double) pageHeight);
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
                 } else {
                     addBlankPage(doc);
                 }
-            } else {
-                addBlankPage(doc);
             }
-            doc.newPage();
-            // 偶数ページ: 移行後
-            if (i < afterFiles.size()) {
+        } else if (beforeSize == 0) {
+            // 移行前のみ0件 → 移行後だけを連続で出力
+            for (int i = 0; i < afterSize; i++) {
+                if (i > 0) doc.newPage();
                 Path path = afterFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), (double) pageWidth, (double) pageHeight);
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
                 } else {
                     addBlankPage(doc);
                 }
-            } else {
-                addBlankPage(doc);
+            }
+        } else {
+            // 両方に要素あり → 奇数ページ: 移行前、偶数ページ: 移行後で交互に出力
+            int maxCount = Math.max(beforeSize, afterSize);
+            for (int i = 0; i < maxCount; i++) {
+                if (i > 0) doc.newPage();
+                if (i < beforeSize) {
+                    Path path = beforeFiles.get(i);
+                    if (path != null) {
+                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                    } else {
+                        addBlankPage(doc);
+                    }
+                } else {
+                    addBlankPage(doc);
+                }
+                doc.newPage();
+                if (i < afterSize) {
+                    Path path = afterFiles.get(i);
+                    if (path != null) {
+                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                    } else {
+                        addBlankPage(doc);
+                    }
+                } else {
+                    addBlankPage(doc);
+                }
             }
         }
 
@@ -619,13 +554,82 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
+     * PDF にファイル名・空白ページラベルなどを描画する際に使うフォントを返す。
+     * 日本語対応 TTF を優先（リソース → ユーザーディレクトリ → Windows Fonts）し、失敗時は Helvetica。
+     */
+    private static Font getPdfTextFont() {
+        if (pdfTextFont != null) {
+            return pdfTextFont;
+        }
+        try {
+            // 1. リソースのフォント（src/main/resources/fonts/ に .ttf を配置）
+            String[] resourcePaths = {"fonts/NotoSansJP-Regular.ttf", "fonts/japanese.ttf", "fonts/ipag.ttf", "fonts/ipaexg.ttf"};
+            for (String resPath : resourcePaths) {
+                try (InputStream in = MigrationScreenshotPdfApp.class.getResourceAsStream("/" + resPath)) {
+                    if (in != null) {
+                        pdfTextFont = createFontFromStream(in, 10);
+                        if (pdfTextFont != null) return pdfTextFont;
+                    }
+                }
+            }
+            // 2. ユーザーディレクトリのフォント（.screenShotToPdf/fonts/ に .ttf を配置すると利用可能）
+            Path userFontsDir = HISTORY_DIR.resolve("fonts");
+            if (Files.isDirectory(userFontsDir)) {
+                try (Stream<Path> list = Files.list(userFontsDir)) {
+                    Path ttf = list.filter(p -> Files.isRegularFile(p) && p.toString().toLowerCase().endsWith(".ttf"))
+                            .findFirst().orElse(null);
+                    if (ttf != null) {
+                        BaseFont bf = BaseFont.createFont(ttf.toAbsolutePath().toString(), BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
+                        pdfTextFont = new Font(bf, 10, Font.NORMAL);
+                        return pdfTextFont;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            // 3. Windows の日本語フォント（.ttf のみ。OpenPDF は .ttc を扱えない場合がある）
+            String winDir = System.getenv("SystemRoot");
+            if (winDir != null) {
+                Path fontsDir = Paths.get(winDir, "Fonts");
+                String[] winFonts = {"msgothic.ttc", "meiryo.ttc", "yugothm.ttc"};
+                for (String name : winFonts) {
+                    Path fontPath = fontsDir.resolve(name);
+                    if (!Files.isRegularFile(fontPath)) continue;
+                    for (String spec : new String[]{fontPath.toAbsolutePath() + ",0", fontPath.toAbsolutePath().toString()}) {
+                        try {
+                            BaseFont bf = BaseFont.createFont(spec, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
+                            pdfTextFont = new Font(bf, 10, Font.NORMAL);
+                            return pdfTextFont;
+                        } catch (Exception e) {
+                            continue;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        pdfTextFont = new Font(Font.HELVETICA, 10, Font.NORMAL);
+        return pdfTextFont;
+    }
+
+    private static Font createFontFromStream(InputStream in, int size) {
+        try {
+            Path temp = Files.createTempFile("pdffont", ".ttf");
+            temp.toFile().deleteOnExit();
+            Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
+            BaseFont bf = BaseFont.createFont(temp.toAbsolutePath().toString(), BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
+            return new Font(bf, size, Font.NORMAL);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * PDF ドキュメントに空白ページ（ラベルテキストのみ）を 1 ページ追加する。
      *
      * @param doc 対象の PDF ドキュメント
      */
     private static void addBlankPage(Document doc) {
-        Font font = new Font(Font.HELVETICA, 10, Font.NORMAL);
-        doc.add(new Paragraph(BLANK_PAGE_LABEL, font));
+        doc.add(new Paragraph(BLANK_PAGE_LABEL, getPdfTextFont()));
     }
 
     /**
@@ -639,14 +643,17 @@ public class MigrationScreenshotPdfApp {
      */
     private void addImagePage(Document doc, String imagePath, Double pageWidth, Double pageHeight) {
         String fileName = Paths.get(imagePath).getFileName().toString();
-        Font font = new Font(Font.HELVETICA, 10, Font.NORMAL);
+        Font font = getPdfTextFont();
         float imageAreaHeight = pageHeight.floatValue() - 18f;
 
         try {
             Image img = Image.getInstance(imagePath);
             float iw = img.getWidth();
             float ih = img.getHeight();
-            if (iw <= 0 || ih <= 0) return;
+            if (iw <= 0 || ih <= 0) {
+                addBlankPage(doc);
+                return;
+            }
 
             float scale = (float) Math.min(pageWidth / iw, imageAreaHeight / ih);
             float w = (float) (iw * scale);
@@ -661,6 +668,7 @@ public class MigrationScreenshotPdfApp {
             doc.add(block);
         } catch (Exception e) {
             log("画像読み込みエラー: " + imagePath + " - " + e.getMessage());
+            addBlankPage(doc);
         }
     }
 }

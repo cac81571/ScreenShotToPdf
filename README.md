@@ -42,3 +42,13 @@ java -jar target/migration-screenshot-pdf-1.0.0-SNAPSHOT.jar
 6. **PDF作成** ボタンを押すと、移行前フォルダの**親ディレクトリ**に「移行前フォルダ名.pdf」で PDF が保存され、そのフォルダがエクスプローラーで開く。
 
 同一インデックスの画像が、奇数ページ（移行前）と偶数ページ（移行後）で並ぶため、見比べながら確認しやすくなります。フォルダパスは履歴として `~/.screenShotToPdf/` に保存されます。
+
+**日本語のファイル名・空白ページについて**: PDF 内のテキストは日本語表示に対応しています。次のいずれかの方法で日本語フォント（TTF）を用意してください。
+
+- **推奨（Windows で確実に表示される方法）**  
+  1. [IPAex フォント](https://ipafont.ipa.go.jp/) など日本語対応の **.ttf** をダウンロードする。  
+  2. ユーザーホームの `.screenShotToPdf/fonts/` フォルダを作成し、その中に **.ttf** を 1 つ配置する（例: `C:\Users\<ユーザー名>\.screenShotToPdf\fonts\ipaexg.ttf`）。  
+  3. アプリを起動し、PDF を作成する。
+
+- 開発時は `src/main/resources/fonts/` に **.ttf** を置くと JAR に含まれます。  
+- Windows の Meiryo 等（.ttc）は OpenPDF が扱えない場合があり、その場合は上記の TTF 配置が必要です。
