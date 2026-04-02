@@ -12,7 +12,6 @@ import com.lowagie.text.pdf.PdfWriter;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -52,25 +51,29 @@ public class MigrationScreenshotPdfApp {
     /** PDF用テキストフォント（日本語対応を試行し、失敗時は Helvetica）。null の場合は都度取得。 */
     private static Font pdfTextFont;
 
-    /** 移行前フォルダのパス入力・選択用コンボボックス */
+    /** 画像フォルダAのパス入力・選択用コンボボックス */
     private JComboBox<String> beforeFolderCombo;
-    /** 移行後フォルダのパス入力・選択用コンボボックス */
+    /** 画像フォルダBのパス入力・選択用コンボボックス */
     private JComboBox<String> afterFolderCombo;
     /** PDF作成を実行するボタン */
     private JButton createPdfButton;
     /** ログメッセージを表示するテキストエリア */
     private JTextArea logArea;
-    /** 移行前の画像ファイル名リストのモデル */
+    /** 画像ファイルAの画像ファイル名リストのモデル */
     private DefaultListModel<String> beforeListModel;
-    /** 移行後の画像ファイル名リストのモデル */
+    /** 画像ファイルBの画像ファイル名リストのモデル */
     private DefaultListModel<String> afterListModel;
-    /** 移行前の画像ファイル一覧を表示するリスト */
+    /** 画像ファイルAの画像ファイル一覧を表示するリスト */
     private JList<String> beforeList;
-    /** 移行後の画像ファイル一覧を表示するリスト */
+    /** 画像ファイルBの画像ファイル一覧を表示するリスト */
     private JList<String> afterList;
-    /** 移行前リストに対応するファイルパス（null は空白ページ） */
+    /** 画像ファイルAのPDF表示タイトル入力欄 */
+    private JTextField beforeTitleField;
+    /** 画像ファイルBのPDF表示タイトル入力欄 */
+    private JTextField afterTitleField;
+    /** 画像ファイルAリストに対応するファイルパス（null は空白ページ） */
     private List<Path> beforeFilePaths = new ArrayList<>();
-    /** 移行後リストに対応するファイルパス（null は空白ページ） */
+    /** 画像ファイルBリストに対応するファイルパス（null は空白ページ） */
     private List<Path> afterFilePaths = new ArrayList<>();
 
     /**
@@ -108,11 +111,12 @@ public class MigrationScreenshotPdfApp {
         }
 
         JButton extractBtn = new JButton("ファイル抽出");
+        setFixedButtonSize(extractBtn, 100, 35);
         extractBtn.addActionListener(e -> extractImageFilesFromBoth());
 
-        form.add(createRow("移行前フォルダ:", beforeFolderCombo));
+        form.add(createRow("画像フォルダA:", beforeFolderCombo));
         form.add(Box.createVerticalStrut(8));
-        form.add(createRow("移行後フォルダ:", afterFolderCombo));
+        form.add(createRow("画像フォルダB:", afterFolderCombo));
         form.add(Box.createVerticalStrut(8));
         JPanel extractRow = new JPanel(new BorderLayout());
         extractRow.add(extractBtn, BorderLayout.EAST);
@@ -124,6 +128,8 @@ public class MigrationScreenshotPdfApp {
         afterListModel = new DefaultListModel<>();
         beforeList = new JList<>(beforeListModel);
         afterList = new JList<>(afterListModel);
+        beforeTitleField = new JTextField("移行前", 10);
+        afterTitleField = new JTextField("移行後", 10);
         beforeList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         afterList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         beforeList.setVisibleRowCount(8);
@@ -131,9 +137,8 @@ public class MigrationScreenshotPdfApp {
 
         JPanel listPanel = new JPanel(new GridLayout(1, 2, 10, 0));
         JPanel beforeListPanel = new JPanel(new BorderLayout(2, 4));
-        beforeListPanel.setBorder(new TitledBorder(
-                new EmptyBorder(2, 4, 2, 4), "移行前 画像ファイル",
-                TitledBorder.LEFT, TitledBorder.TOP));
+        beforeListPanel.setBorder(new EmptyBorder(2, 4, 2, 4));
+        beforeListPanel.add(createTitleInputPanel("画像ファイルA", beforeTitleField), BorderLayout.NORTH);
         beforeListPanel.add(new JScrollPane(beforeList), BorderLayout.CENTER);
         JPanel beforeBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         JButton beforeDeleteBtn = new JButton("選択削除");
@@ -148,9 +153,8 @@ public class MigrationScreenshotPdfApp {
         beforeListPanel.add(beforeBtnPanel, BorderLayout.SOUTH);
 
         JPanel afterListPanel = new JPanel(new BorderLayout(2, 4));
-        afterListPanel.setBorder(new TitledBorder(
-                new EmptyBorder(2, 4, 2, 4), "移行後 画像ファイル",
-                TitledBorder.LEFT, TitledBorder.TOP));
+        afterListPanel.setBorder(new EmptyBorder(2, 4, 2, 4));
+        afterListPanel.add(createTitleInputPanel("画像ファイルB", afterTitleField), BorderLayout.NORTH);
         afterListPanel.add(new JScrollPane(afterList), BorderLayout.CENTER);
         JPanel afterBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         JButton afterDeleteBtn = new JButton("選択削除");
@@ -171,6 +175,7 @@ public class MigrationScreenshotPdfApp {
         JPanel buttonRow = new JPanel(new BorderLayout(8, 0));
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         createPdfButton = new JButton("PDF作成");
+        setFixedButtonSize(createPdfButton, 100, 35);
         createPdfButton.addActionListener(e -> createPdf());
         buttonRow.add(createPdfButton, BorderLayout.EAST);
         bottom.add(buttonRow, BorderLayout.NORTH);
@@ -216,6 +221,22 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
+     * リスト見出しの右側に置くタイトル入力欄パネルを作成する。
+     *
+     * @param titleField タイトル入力欄
+     * @return 作成したパネル
+     */
+    private static JPanel createTitleInputPanel(String sectionLabel, JTextField titleField) {
+        JPanel panel = new JPanel(new BorderLayout(6, 2));
+        panel.add(new JLabel(sectionLabel), BorderLayout.WEST);
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        right.add(new JLabel("タイトル:"));
+        right.add(titleField);
+        panel.add(right, BorderLayout.EAST);
+        panel.setBorder(new EmptyBorder(0, 0, 2, 0));
+        return panel;
+    }
+    /**
      * 移行前・移行後の両フォルダから画像ファイルを抽出し、それぞれのリストに反映する。
      */
     private void extractImageFilesFromBoth() {
@@ -234,7 +255,7 @@ public class MigrationScreenshotPdfApp {
         List<Path> paths = isBefore ? beforeFilePaths : afterFilePaths;
         int[] indices = list.getSelectedIndices();
         if (indices.length == 0) {
-            log((isBefore ? "移行前" : "移行後") + ": 削除する項目を選択してください。");
+            log((isBefore ? "画像ファイルA" : "画像ファイルB") + ": 削除する項目を選択してください。");
             return;
         }
         List<Integer> toRemove = new ArrayList<>();
@@ -246,7 +267,7 @@ public class MigrationScreenshotPdfApp {
             model.remove(idx);
             paths.remove(idx);
         }
-        log((isBefore ? "移行前" : "移行後") + ": " + toRemove.size() + " 件を削除しました。");
+        log((isBefore ? "画像ファイルA" : "画像ファイルB") + ": " + toRemove.size() + " 件を削除しました。");
     }
 
     /**
@@ -265,7 +286,7 @@ public class MigrationScreenshotPdfApp {
                 : (list.getSelectedIndex() >= 0 ? list.getSelectedIndex() + 1 : model.size());
         model.insertElementAt(BLANK_PAGE_LABEL, insertIndex);
         paths.add(insertIndex, null);
-        log((isBefore ? "移行前" : "移行後") + "に空白ページを追加しました。");
+        log((isBefore ? "画像ファイルA" : "画像ファイルB") + "に空白ページを追加しました。");
     }
 
     /**
@@ -278,7 +299,7 @@ public class MigrationScreenshotPdfApp {
         String pathStr = comboText(isBefore ? beforeFolderCombo : afterFolderCombo);
         if (pathStr != null) pathStr = pathStr.trim();
         if (pathStr == null || pathStr.isEmpty()) {
-            log(isBefore ? "移行前フォルダを指定してください。" : "移行後フォルダを指定してください。");
+            log(isBefore ? "画像フォルダAを指定してください。" : "画像フォルダBを指定してください。");
             return;
         }
         Path dir = Paths.get(pathStr);
@@ -304,7 +325,7 @@ public class MigrationScreenshotPdfApp {
         }
         if (isBefore) saveToHistory("before_folders", pathStr);
         else saveToHistory("after_folders", pathStr);
-        log((isBefore ? "移行前" : "移行後") + ": " + files.size() + " 件の画像を抽出しました。");
+        log((isBefore ? "画像ファイルA" : "画像ファイルB") + ": " + files.size() + " 件の画像を抽出しました。");
     }
 
     /**
@@ -334,6 +355,19 @@ public class MigrationScreenshotPdfApp {
     private static String comboText(JComboBox<String> cb) {
         Object o = cb.isEditable() ? cb.getEditor().getItem() : cb.getSelectedItem();
         return o == null ? "" : o.toString();
+    }
+
+    /**
+     * ボタンのサイズを固定する。
+     *
+     * @param button 対象のボタン
+     * @param width  横幅（px）
+     * @param height 高さ（px）
+     */
+    private static void setFixedButtonSize(JButton button, int width, int height) {
+        Dimension fixed = new Dimension(Math.max(0, width), Math.max(0, height));
+        button.setPreferredSize(fixed);
+        button.setMinimumSize(fixed);
     }
 
     /**
@@ -372,7 +406,7 @@ public class MigrationScreenshotPdfApp {
      */
     private void createPdf() {
         if (beforeFilePaths.isEmpty() && afterFilePaths.isEmpty()) {
-            log("ファイルリストが空です。移行前・移行後で「ファイル抽出」を実行してください。");
+            log("ファイルリストが空です。画像フォルダA・画像フォルダBで「ファイル抽出」を実行してください。");
             return;
         }
         int maxCount = Math.max(beforeFilePaths.size(), afterFilePaths.size());
@@ -387,7 +421,7 @@ public class MigrationScreenshotPdfApp {
             String beforePathStr = comboText(beforeFolderCombo);
             if (beforePathStr != null) beforePathStr = beforePathStr.trim();
             if (beforePathStr == null || beforePathStr.isEmpty()) {
-                log("PDFの出力先を決めるため、移行前フォルダを指定してください。");
+                log("PDFの出力先を決めるため、画像フォルダAを指定してください。");
                 return;
             }
             Path beforeFolderPath = Paths.get(beforePathStr);
@@ -397,7 +431,7 @@ public class MigrationScreenshotPdfApp {
             String afterPathStr = comboText(afterFolderCombo);
             if (afterPathStr != null) afterPathStr = afterPathStr.trim();
             if (afterPathStr == null || afterPathStr.isEmpty()) {
-                log("PDFの出力先を決めるため、移行後フォルダを指定してください。");
+                log("PDFの出力先を決めるため、画像フォルダBを指定してください。");
                 return;
             }
             Path afterFolderPath = Paths.get(afterPathStr);
@@ -405,13 +439,15 @@ public class MigrationScreenshotPdfApp {
             baseName = afterFolderPath.getFileName().toString();
         }
         String outputPath = outputDir.resolve(baseName + ".pdf").toString();
+        String beforeTitle = beforeTitleField.getText() == null ? "" : beforeTitleField.getText().trim();
+        String afterTitle = afterTitleField.getText() == null ? "" : afterTitleField.getText().trim();
 
         createPdfButton.setEnabled(false);
         log("PDFを作成しています...");
 
         new Thread(() -> {
             try {
-                buildPdfFromLists(beforeFilePaths, afterFilePaths, outputPath);
+                buildPdfFromLists(beforeFilePaths, afterFilePaths, outputPath, beforeTitle, afterTitle);
                 SwingUtilities.invokeLater(() -> {
                     createPdfButton.setEnabled(true);
                     log("PDFを作成しました: " + outputPath);
@@ -453,7 +489,9 @@ public class MigrationScreenshotPdfApp {
      * @param outputPath  出力 PDF のフルパス
      * @throws Exception PDF の生成・書き込みに失敗した場合
      */
-    private void buildPdfFromLists(List<Path> beforeFiles, List<Path> afterFiles, String outputPath)
+    private void buildPdfFromLists(
+            List<Path> beforeFiles, List<Path> afterFiles, String outputPath,
+            String beforeTitle, String afterTitle)
             throws Exception {
         int beforeSize = beforeFiles.size();
         int afterSize = afterFiles.size();
@@ -476,7 +514,7 @@ public class MigrationScreenshotPdfApp {
                 if (i > 0) doc.newPage();
                 Path path = beforeFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, beforeTitle);
                 } else {
                     addBlankPage(doc);
                 }
@@ -487,7 +525,7 @@ public class MigrationScreenshotPdfApp {
                 if (i > 0) doc.newPage();
                 Path path = afterFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, afterTitle);
                 } else {
                     addBlankPage(doc);
                 }
@@ -500,7 +538,7 @@ public class MigrationScreenshotPdfApp {
                 if (i < beforeSize) {
                     Path path = beforeFiles.get(i);
                     if (path != null) {
-                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, beforeTitle);
                     } else {
                         addBlankPage(doc);
                     }
@@ -511,7 +549,7 @@ public class MigrationScreenshotPdfApp {
                 if (i < afterSize) {
                     Path path = afterFiles.get(i);
                     if (path != null) {
-                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH);
+                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, afterTitle);
                     } else {
                         addBlankPage(doc);
                     }
@@ -641,8 +679,9 @@ public class MigrationScreenshotPdfApp {
      * @param pageWidth ページ内の利用可能幅（pt）
      * @param pageHeight ページ内の利用可能高さ（pt）
      */
-    private void addImagePage(Document doc, String imagePath, Double pageWidth, Double pageHeight) {
+    private void addImagePage(Document doc, String imagePath, Double pageWidth, Double pageHeight, String title) {
         String fileName = Paths.get(imagePath).getFileName().toString();
+        String displayName = formatDisplayName(fileName, title);
         Font font = getPdfTextFont();
         float imageAreaHeight = pageHeight.floatValue() - 18f;
 
@@ -662,7 +701,7 @@ public class MigrationScreenshotPdfApp {
             img.setAlignment(Image.ALIGN_CENTER);
 
             Paragraph block = new Paragraph();
-            block.add(new Chunk(fileName, font));
+            block.add(new Chunk(displayName, font));
             block.add(Chunk.NEWLINE);
             block.add(img);
             doc.add(block);
@@ -670,5 +709,20 @@ public class MigrationScreenshotPdfApp {
             log("画像読み込みエラー: " + imagePath + " - " + e.getMessage());
             addBlankPage(doc);
         }
+    }
+
+    /**
+     * 画像上部に表示する文字列を作る。タイトルが空でない場合は【タイトル】を先頭に付ける。
+     *
+     * @param fileName ファイル名
+     * @param title    タイトル
+     * @return 表示文字列
+     */
+    private static String formatDisplayName(String fileName, String title) {
+        String normalizedTitle = title == null ? "" : title.trim();
+        if (normalizedTitle.isEmpty()) {
+            return fileName;
+        }
+        return "【" + normalizedTitle + "】 " + fileName;
     }
 }
