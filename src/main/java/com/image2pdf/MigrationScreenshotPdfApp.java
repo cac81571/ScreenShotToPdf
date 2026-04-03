@@ -60,6 +60,8 @@ public class MigrationScreenshotPdfApp {
     private JComboBox<String> afterFolderCombo;
     /** PDF作成を実行するボタン */
     private JButton createPdfButton;
+    /** 選択行の A/B 画像に差分マスクを重ねて PNG 保存するボタン */
+    private JButton diffOverlayButton;
     /** ログメッセージを表示するテキストエリア */
     private JTextArea logArea;
     /** 画像ファイルAの画像ファイル名リストのモデル */
@@ -74,6 +76,16 @@ public class MigrationScreenshotPdfApp {
     private JTextField beforeTitleField;
     /** 画像ファイルBのPDF表示タイトル入力欄 */
     private JTextField afterTitleField;
+    /** 差分判定しきい値入力欄（RGB差分合計） */
+    private JTextField diffThresholdField;
+    /** 差分マスク赤アルファ入力欄（0.0〜1.0） */
+    private JTextField diffAlphaField;
+    /** 差分マスク拡張半径入力欄（px） */
+    private JTextField diffExpandRadiusField;
+    /** 差分PNGの画像Aに赤マスクを重ねるか */
+    private JCheckBox diffOverlayCheckA;
+    /** 差分PNGの画像Bに赤マスクを重ねるか */
+    private JCheckBox diffOverlayCheckB;
     /** 画像ファイルAリストに対応するファイルパス（null は空白ページ） */
     private List<Path> beforeFilePaths = new ArrayList<>();
     /** 画像ファイルBリストに対応するファイルパス（null は空白ページ） */
@@ -95,7 +107,7 @@ public class MigrationScreenshotPdfApp {
     void run() {
         JFrame frame = new JFrame("マイグレーション スクリーンショット PDF 作成ツール");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(720, 520);
+        frame.setSize(820, 520);
         frame.setLocationRelativeTo(null);
 
         JPanel main = new JPanel(new BorderLayout(10, 10));
@@ -177,10 +189,17 @@ public class MigrationScreenshotPdfApp {
         JPanel bottom = new JPanel(new BorderLayout(0, 6));
         JPanel buttonRow = new JPanel(new BorderLayout(8, 0));
         buttonRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        buttonRow.add(createDiffSettingsPanel(), BorderLayout.WEST);
+        JPanel rightButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        diffOverlayButton = new JButton("差分PDF作成");
+        setFixedButtonSize(diffOverlayButton, 120, 35);
+        diffOverlayButton.addActionListener(e -> createDiffOverlayPdf());
         createPdfButton = new JButton("PDF作成");
         setFixedButtonSize(createPdfButton, 100, 35);
         createPdfButton.addActionListener(e -> createPdf());
-        buttonRow.add(createPdfButton, BorderLayout.EAST);
+        rightButtons.add(diffOverlayButton);
+        rightButtons.add(createPdfButton);
+        buttonRow.add(rightButtons, BorderLayout.EAST);
         bottom.add(buttonRow, BorderLayout.NORTH);
 
         logArea = new JTextArea(6, 40);
@@ -192,6 +211,27 @@ public class MigrationScreenshotPdfApp {
 
         frame.getContentPane().add(main);
         frame.setVisible(true);
+    }
+
+    /**
+     * 差分画像保存で使うパラメータ入力欄を作成する。
+     */
+    private JPanel createDiffSettingsPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        diffThresholdField = new JTextField("32", 4);
+        diffAlphaField = new JTextField("0.45", 4);
+        diffExpandRadiusField = new JTextField("10", 3);
+        diffOverlayCheckA = new JCheckBox("Aにマスク", false);
+        diffOverlayCheckB = new JCheckBox("Bにマスク", true);
+        panel.add(new JLabel("差分しきい値:"));
+        panel.add(diffThresholdField);
+        panel.add(new JLabel("赤α:"));
+        panel.add(diffAlphaField);
+        panel.add(new JLabel("マスク拡張:"));
+        panel.add(diffExpandRadiusField);
+        panel.add(diffOverlayCheckA);
+        panel.add(diffOverlayCheckB);
+        return panel;
     }
 
     /**
@@ -452,6 +492,165 @@ public class MigrationScreenshotPdfApp {
             Files.write(f, updated, StandardCharsets.UTF_8);
         } catch (IOException ignored) {
         }
+    }
+
+    /**
+     * リスト全件を対象に A/B 画像を比較し、差分オーバーレイ結果を PDF にまとめて保存する。
+     * 中間画像（PNG）は {@code diff_overlay} フォルダに保存し、PDF は親ディレクトリ直下に作成する。
+     */
+    private void createDiffOverlayPdf() {
+        int maxCount = Math.max(beforeFilePaths.size(), afterFilePaths.size());
+        if (maxCount == 0) {
+            log("差分PDF: ファイルリストが空です。画像フォルダA・画像フォルダBで「ファイル抽出」を実行してください。");
+            return;
+        }
+        Path outDir = resolveDiffOutputDirectory();
+        if (outDir == null) {
+            log("差分PDF: 出力先を決めるため、画像フォルダAまたはBを指定してください。");
+            return;
+        }
+        String beforePathStr = comboText(beforeFolderCombo);
+        String afterPathStr = comboText(afterFolderCombo);
+        String baseName;
+        if (beforePathStr != null && !beforePathStr.trim().isEmpty()) {
+            baseName = Paths.get(beforePathStr.trim()).getFileName().toString();
+        } else if (afterPathStr != null && !afterPathStr.trim().isEmpty()) {
+            baseName = Paths.get(afterPathStr.trim()).getFileName().toString();
+        } else {
+            log("差分PDF: ベース名の決定に失敗しました。");
+            return;
+        }
+        Path pdfPath = outDir.getParent().resolve(baseName + "_diff_overlay.pdf");
+        String beforeTitle = beforeTitleField.getText() == null ? "" : beforeTitleField.getText().trim();
+        String afterTitle = afterTitleField.getText() == null ? "" : afterTitleField.getText().trim();
+
+        ImageDiffOverlay.DiffSettings settings;
+        try {
+            settings = readDiffSettingsFromUi();
+        } catch (IllegalArgumentException ex) {
+            log("差分PDF: " + ex.getMessage());
+            JOptionPane.showMessageDialog(null, ex.getMessage(),
+                    "差分PDF作成", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        diffOverlayButton.setEnabled(false);
+        log("差分PDFを作成しています...");
+
+        new Thread(() -> {
+            try {
+                List<Path> beforeDiffPaths = new ArrayList<>();
+                List<Path> afterDiffPaths = new ArrayList<>();
+                int comparedCount = 0;
+                int resizedCount = 0;
+                int skippedCount = 0;
+
+                for (int i = 0; i < maxCount; i++) {
+                    Path pathA = i < beforeFilePaths.size() ? beforeFilePaths.get(i) : null;
+                    Path pathB = i < afterFilePaths.size() ? afterFilePaths.get(i) : null;
+                    if (pathA == null || pathB == null || !Files.isRegularFile(pathA) || !Files.isRegularFile(pathB)) {
+                        beforeDiffPaths.add(null);
+                        afterDiffPaths.add(null);
+                        skippedCount++;
+                        continue;
+                    }
+                    Path outA = outDir.resolve(String.format("diff_%03d_A.png", i + 1));
+                    Path outB = outDir.resolve(String.format("diff_%03d_B.png", i + 1));
+                    String resizeNote = ImageDiffOverlay.writeMarkedPair(pathA, pathB, outA, outB, settings);
+                    if (resizeNote != null) {
+                        resizedCount++;
+                    }
+                    beforeDiffPaths.add(outA);
+                    afterDiffPaths.add(outB);
+                    comparedCount++;
+                }
+
+                buildPdfFromLists(
+                        beforeDiffPaths, afterDiffPaths, pdfPath.toString(),
+                        beforeTitle + " 差分", afterTitle + " 差分", outDir, outDir);
+
+                int finalComparedCount = comparedCount;
+                int finalSkippedCount = skippedCount;
+                int finalResizedCount = resizedCount;
+                SwingUtilities.invokeLater(() -> {
+                    diffOverlayButton.setEnabled(true);
+                    log("差分PDFを作成しました: " + pdfPath);
+                    log(String.format("差分比較: %d 件（スキップ: %d 件 / リサイズ比較: %d 件）",
+                            finalComparedCount, finalSkippedCount, finalResizedCount));
+                    openFolderInExplorer(pdfPath.getParent());
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+                SwingUtilities.invokeLater(() -> {
+                    diffOverlayButton.setEnabled(true);
+                    log("差分PDF作成エラー: " + e.getMessage());
+                    JOptionPane.showMessageDialog(null, e.getMessage(),
+                            "差分PDF作成", JOptionPane.ERROR_MESSAGE);
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * 画面の差分設定入力欄から値を取得し、妥当性チェック後に返す。
+     */
+    private ImageDiffOverlay.DiffSettings readDiffSettingsFromUi() {
+        int threshold;
+        float alpha;
+        int expandRadius;
+        try {
+            threshold = Integer.parseInt(diffThresholdField.getText().trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("差分しきい値は整数で入力してください。");
+        }
+        try {
+            alpha = Float.parseFloat(diffAlphaField.getText().trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("赤αは 0.0〜1.0 の数値で入力してください。");
+        }
+        try {
+            expandRadius = Integer.parseInt(diffExpandRadiusField.getText().trim());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("マスク拡張は 0 以上の整数で入力してください。");
+        }
+        if (threshold < 0) {
+            throw new IllegalArgumentException("差分しきい値は 0 以上にしてください。");
+        }
+        if (alpha < 0f || alpha > 1f) {
+            throw new IllegalArgumentException("赤αは 0.0〜1.0 の範囲にしてください。");
+        }
+        if (expandRadius < 0) {
+            throw new IllegalArgumentException("マスク拡張は 0 以上にしてください。");
+        }
+        return new ImageDiffOverlay.DiffSettings(
+                threshold, alpha, expandRadius,
+                diffOverlayCheckA.isSelected(), diffOverlayCheckB.isSelected());
+    }
+
+    /**
+     * 差分 PNG の保存先ディレクトリ（{@code diff_overlay}）を返す。
+     * 画像フォルダAの親が取れる場合はその直下、無ければBの親の直下。
+     *
+     * @return 保存先フォルダ。決められない場合は null
+     */
+    private Path resolveDiffOutputDirectory() {
+        String beforePathStr = comboText(beforeFolderCombo);
+        if (beforePathStr != null && !beforePathStr.trim().isEmpty()) {
+            Path beforeFolder = Paths.get(beforePathStr.trim());
+            Path parent = beforeFolder.getParent();
+            if (parent != null) {
+                return parent.resolve("diff_overlay");
+            }
+        }
+        String afterPathStr = comboText(afterFolderCombo);
+        if (afterPathStr != null && !afterPathStr.trim().isEmpty()) {
+            Path afterFolder = Paths.get(afterPathStr.trim());
+            Path parent = afterFolder.getParent();
+            if (parent != null) {
+                return parent.resolve("diff_overlay");
+            }
+        }
+        return null;
     }
 
     /**
