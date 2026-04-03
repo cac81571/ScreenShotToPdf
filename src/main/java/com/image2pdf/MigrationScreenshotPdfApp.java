@@ -114,9 +114,9 @@ public class MigrationScreenshotPdfApp {
         setFixedButtonSize(extractBtn, 100, 35);
         extractBtn.addActionListener(e -> extractImageFilesFromBoth());
 
-        form.add(createRow("画像フォルダA:", beforeFolderCombo));
+        form.add(createFolderRow("画像フォルダA:", beforeFolderCombo, true));
         form.add(Box.createVerticalStrut(8));
-        form.add(createRow("画像フォルダB:", afterFolderCombo));
+        form.add(createFolderRow("画像フォルダB:", afterFolderCombo, false));
         form.add(Box.createVerticalStrut(8));
         JPanel extractRow = new JPanel(new BorderLayout());
         extractRow.add(extractBtn, BorderLayout.EAST);
@@ -205,18 +205,23 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * ラベルとコンポーネントを横並びにした 1 行のパネルを作成する。
+     * フォルダ入力欄の右側に「フォルダ参照」ボタンを持つ 1 行パネルを作成する。
      *
      * @param labelText ラベルに表示する文字列
-     * @param field     右側に配置するコンポーネント
+     * @param combo     フォルダパス入力用コンボボックス
+     * @param isBefore  true のとき移行前、false のとき移行後の入力欄
      * @return 作成したパネル
      */
-    private static JPanel createRow(String labelText, JComponent field) {
+    private JPanel createFolderRow(String labelText, JComboBox<String> combo, boolean isBefore) {
         JPanel row = new JPanel();
         row.setLayout(new BoxLayout(row, BoxLayout.LINE_AXIS));
         row.add(new JLabel(labelText));
         row.add(Box.createHorizontalStrut(8));
-        row.add(field);
+        row.add(combo);
+        row.add(Box.createHorizontalStrut(8));
+        JButton browseBtn = new JButton("フォルダ参照");
+        browseBtn.addActionListener(e -> openSelectedFolderInExplorer(isBefore));
+        row.add(browseBtn);
         return row;
     }
 
@@ -320,7 +325,7 @@ public class MigrationScreenshotPdfApp {
         model.clear();
         paths.clear();
         for (Path p : files) {
-            model.addElement(p.getFileName().toString());
+            model.addElement(dir.relativize(p).toString());
             paths.add(p);
         }
         if (isBefore) saveToHistory("before_folders", pathStr);
@@ -355,6 +360,27 @@ public class MigrationScreenshotPdfApp {
     private static String comboText(JComboBox<String> cb) {
         Object o = cb.isEditable() ? cb.getEditor().getItem() : cb.getSelectedItem();
         return o == null ? "" : o.toString();
+    }
+
+    /**
+     * 指定された入力欄に設定されたフォルダをエクスプローラーで開く。
+     *
+     * @param isBefore true のとき移行前、false のとき移行後の入力欄を対象にする
+     */
+    private void openSelectedFolderInExplorer(boolean isBefore) {
+        JComboBox<String> combo = isBefore ? beforeFolderCombo : afterFolderCombo;
+        String pathStr = comboText(combo);
+        if (pathStr != null) pathStr = pathStr.trim();
+        if (pathStr == null || pathStr.isEmpty()) {
+            log((isBefore ? "画像フォルダA" : "画像フォルダB") + "のパスを指定してください。");
+            return;
+        }
+        Path dir = Paths.get(pathStr);
+        if (!Files.isDirectory(dir)) {
+            log("フォルダが存在しません: " + pathStr);
+            return;
+        }
+        openFolderInExplorer(dir);
     }
 
     /**
@@ -563,7 +589,7 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * 指定ディレクトリ内の画像ファイル（IMAGE_EXTENSIONS に含まれる拡張子）のパスを一覧で返す。
+     * 指定ディレクトリ配下の画像ファイル（IMAGE_EXTENSIONS に含まれる拡張子）のパスを一覧で返す。
      *
      * @param dir 検索対象のディレクトリ
      * @return 画像ファイルの Path のリスト
@@ -574,7 +600,7 @@ public class MigrationScreenshotPdfApp {
         for (String ext : IMAGE_EXTENSIONS) {
             lower.add(ext.toLowerCase());
         }
-        return Files.list(dir)
+        return Files.walk(dir)
                 .filter(Files::isRegularFile)
                 .filter(p -> lower.contains(getExtension(p.getFileName().toString()).toLowerCase()))
                 .collect(Collectors.toList());
