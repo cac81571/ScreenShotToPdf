@@ -27,6 +27,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -44,6 +45,8 @@ public class MigrationScreenshotPdfApp {
             ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp");
     /** フォルダ履歴に保持する最大件数 */
     private static final int HISTORY_MAX = 30;
+    /** リスト表示の先頭連番（例: "001. "）を判定する正規表現 */
+    private static final Pattern LIST_NUMBER_PREFIX = Pattern.compile("^\\d+\\.\\s+");
     /** 履歴ファイルを保存するディレクトリ（ユーザーホーム直下の .screenShotToPdf） */
     private static final Path HISTORY_DIR = Paths.get(
             System.getProperty("user.home"), ".screenShotToPdf");
@@ -272,6 +275,7 @@ public class MigrationScreenshotPdfApp {
             model.remove(idx);
             paths.remove(idx);
         }
+        renumberListModel(model);
         log((isBefore ? "画像ファイルA" : "画像ファイルB") + ": " + toRemove.size() + " 件を削除しました。");
     }
 
@@ -291,6 +295,7 @@ public class MigrationScreenshotPdfApp {
                 : (list.getSelectedIndex() >= 0 ? list.getSelectedIndex() + 1 : model.size());
         model.insertElementAt(BLANK_PAGE_LABEL, insertIndex);
         paths.add(insertIndex, null);
+        renumberListModel(model);
         log((isBefore ? "画像ファイルA" : "画像ファイルB") + "に空白ページを追加しました。");
     }
 
@@ -328,9 +333,33 @@ public class MigrationScreenshotPdfApp {
             model.addElement(dir.relativize(p).toString());
             paths.add(p);
         }
+        renumberListModel(model);
         if (isBefore) saveToHistory("before_folders", pathStr);
         else saveToHistory("after_folders", pathStr);
         log((isBefore ? "画像ファイルA" : "画像ファイルB") + ": " + files.size() + " 件の画像を抽出しました。");
+    }
+
+    /**
+     * リスト表示の全要素に 1 始まりの連番を付与する。
+     *
+     * @param model 対象のリストモデル
+     */
+    private static void renumberListModel(DefaultListModel<String> model) {
+        for (int i = 0; i < model.getSize(); i++) {
+            String base = stripListNumber(model.getElementAt(i));
+            model.set(i, String.format("%03d. %s", i + 1, base));
+        }
+    }
+
+    /**
+     * リスト表示文字列の先頭にある連番プレフィックスを除去する。
+     *
+     * @param text 表示文字列
+     * @return 連番除去後の文字列
+     */
+    private static String stripListNumber(String text) {
+        if (text == null || text.isEmpty()) return "";
+        return LIST_NUMBER_PREFIX.matcher(text).replaceFirst("");
     }
 
     /**
@@ -443,6 +472,8 @@ public class MigrationScreenshotPdfApp {
 
         Path outputDir;
         String baseName;
+        Path beforeBaseDir = null;
+        Path afterBaseDir = null;
         if (!beforeFilePaths.isEmpty()) {
             String beforePathStr = comboText(beforeFolderCombo);
             if (beforePathStr != null) beforePathStr = beforePathStr.trim();
@@ -451,6 +482,7 @@ public class MigrationScreenshotPdfApp {
                 return;
             }
             Path beforeFolderPath = Paths.get(beforePathStr);
+            beforeBaseDir = beforeFolderPath;
             outputDir = beforeFolderPath.getParent();
             baseName = beforeFolderPath.getFileName().toString();
         } else {
@@ -461,19 +493,34 @@ public class MigrationScreenshotPdfApp {
                 return;
             }
             Path afterFolderPath = Paths.get(afterPathStr);
+            afterBaseDir = afterFolderPath;
             outputDir = afterFolderPath.getParent();
             baseName = afterFolderPath.getFileName().toString();
+        }
+        if (beforeBaseDir == null) {
+            String beforePathStr = comboText(beforeFolderCombo);
+            if (beforePathStr != null && !beforePathStr.trim().isEmpty()) {
+                beforeBaseDir = Paths.get(beforePathStr.trim());
+            }
+        }
+        if (afterBaseDir == null) {
+            String afterPathStr = comboText(afterFolderCombo);
+            if (afterPathStr != null && !afterPathStr.trim().isEmpty()) {
+                afterBaseDir = Paths.get(afterPathStr.trim());
+            }
         }
         String outputPath = outputDir.resolve(baseName + ".pdf").toString();
         String beforeTitle = beforeTitleField.getText() == null ? "" : beforeTitleField.getText().trim();
         String afterTitle = afterTitleField.getText() == null ? "" : afterTitleField.getText().trim();
+        final Path finalBeforeBaseDir = beforeBaseDir;
+        final Path finalAfterBaseDir = afterBaseDir;
 
         createPdfButton.setEnabled(false);
         log("PDFを作成しています...");
 
         new Thread(() -> {
             try {
-                buildPdfFromLists(beforeFilePaths, afterFilePaths, outputPath, beforeTitle, afterTitle);
+                buildPdfFromLists(beforeFilePaths, afterFilePaths, outputPath, beforeTitle, afterTitle, finalBeforeBaseDir, finalAfterBaseDir);
                 SwingUtilities.invokeLater(() -> {
                     createPdfButton.setEnabled(true);
                     log("PDFを作成しました: " + outputPath);
@@ -517,7 +564,8 @@ public class MigrationScreenshotPdfApp {
      */
     private void buildPdfFromLists(
             List<Path> beforeFiles, List<Path> afterFiles, String outputPath,
-            String beforeTitle, String afterTitle)
+            String beforeTitle, String afterTitle,
+            Path beforeBaseDir, Path afterBaseDir)
             throws Exception {
         int beforeSize = beforeFiles.size();
         int afterSize = afterFiles.size();
@@ -540,7 +588,7 @@ public class MigrationScreenshotPdfApp {
                 if (i > 0) doc.newPage();
                 Path path = beforeFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, beforeTitle);
+                    addImagePage(doc, path, pageW, pageH, beforeTitle, beforeBaseDir);
                 } else {
                     addBlankPage(doc);
                 }
@@ -551,7 +599,7 @@ public class MigrationScreenshotPdfApp {
                 if (i > 0) doc.newPage();
                 Path path = afterFiles.get(i);
                 if (path != null) {
-                    addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, afterTitle);
+                    addImagePage(doc, path, pageW, pageH, afterTitle, afterBaseDir);
                 } else {
                     addBlankPage(doc);
                 }
@@ -564,7 +612,7 @@ public class MigrationScreenshotPdfApp {
                 if (i < beforeSize) {
                     Path path = beforeFiles.get(i);
                     if (path != null) {
-                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, beforeTitle);
+                        addImagePage(doc, path, pageW, pageH, beforeTitle, beforeBaseDir);
                     } else {
                         addBlankPage(doc);
                     }
@@ -575,7 +623,7 @@ public class MigrationScreenshotPdfApp {
                 if (i < afterSize) {
                     Path path = afterFiles.get(i);
                     if (path != null) {
-                        addImagePage(doc, path.toAbsolutePath().toString(), pageW, pageH, afterTitle);
+                        addImagePage(doc, path, pageW, pageH, afterTitle, afterBaseDir);
                     } else {
                         addBlankPage(doc);
                     }
@@ -701,18 +749,18 @@ public class MigrationScreenshotPdfApp {
      * ページ内に収まるようスケールし、ファイル名を画像の上に表示する。
      *
      * @param doc       対象の PDF ドキュメント
-     * @param imagePath 画像ファイルのフルパス
+     * @param imagePath 画像ファイルのパス
      * @param pageWidth ページ内の利用可能幅（pt）
      * @param pageHeight ページ内の利用可能高さ（pt）
      */
-    private void addImagePage(Document doc, String imagePath, Double pageWidth, Double pageHeight, String title) {
-        String fileName = Paths.get(imagePath).getFileName().toString();
-        String displayName = formatDisplayName(fileName, title);
+    private void addImagePage(Document doc, Path imagePath, Double pageWidth, Double pageHeight, String title, Path baseDir) {
+        String displayPath = toRelativeOrFileName(imagePath, baseDir);
+        String displayName = formatDisplayName(displayPath, title);
         Font font = getPdfTextFont();
         float imageAreaHeight = pageHeight.floatValue() - 18f;
 
         try {
-            Image img = Image.getInstance(imagePath);
+            Image img = Image.getInstance(imagePath.toAbsolutePath().toString());
             float iw = img.getWidth();
             float ih = img.getHeight();
             if (iw <= 0 || ih <= 0) {
@@ -732,9 +780,28 @@ public class MigrationScreenshotPdfApp {
             block.add(img);
             doc.add(block);
         } catch (Exception e) {
-            log("画像読み込みエラー: " + imagePath + " - " + e.getMessage());
+            log("画像読み込みエラー: " + imagePath.toAbsolutePath() + " - " + e.getMessage());
             addBlankPage(doc);
         }
+    }
+
+    /**
+     * 基準フォルダからの相対パスを返す。相対化できない場合はファイル名を返す。
+     */
+    private static String toRelativeOrFileName(Path imagePath, Path baseDir) {
+        if (imagePath == null) return "";
+        try {
+            if (baseDir != null) {
+                Path normalizedBase = baseDir.toAbsolutePath().normalize();
+                Path normalizedImage = imagePath.toAbsolutePath().normalize();
+                if (normalizedImage.startsWith(normalizedBase)) {
+                    return normalizedBase.relativize(normalizedImage).toString();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        Path fileName = imagePath.getFileName();
+        return fileName == null ? imagePath.toString() : fileName.toString();
     }
 
     /**
