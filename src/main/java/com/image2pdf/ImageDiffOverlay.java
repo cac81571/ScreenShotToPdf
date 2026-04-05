@@ -24,6 +24,26 @@ public final class ImageDiffOverlay {
     private ImageDiffOverlay() {
     }
 
+    /** {@link #writeMarkedPair(Path, Path, Path, Path, DiffSettings)} の結果（リサイズ案内と差分の数値） */
+    public static final class MarkedPairResult {
+        /** B を A に合わせてリサイズしたときのログ用メッセージ。不要な場合は {@code null} */
+        public final String resizeNote;
+        /** しきい値通過の差分ピクセル数（マスク拡張前） */
+        public final int rawDiffPixelCount;
+        /** 拡張後マスクで赤が重なるピクセル数（表示と一致） */
+        public final int expandedDiffPixelCount;
+        public final int width;
+        public final int height;
+
+        public MarkedPairResult(String resizeNote, int rawDiffPixelCount, int expandedDiffPixelCount, int width, int height) {
+            this.resizeNote = resizeNote;
+            this.rawDiffPixelCount = rawDiffPixelCount;
+            this.expandedDiffPixelCount = expandedDiffPixelCount;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
     /** 差分描画パラメータ */
     public static final class DiffSettings {
         public final int rgbSumThreshold;
@@ -51,15 +71,15 @@ public final class ImageDiffOverlay {
      * @param pathB 画像Bのパス
      * @param outA  出力PNG（Aにマスク重ね）
      * @param outB  出力PNG（Bにマスク重ね。Bをリサイズした場合はその解像度で出力）
-     * @return B を A に合わせてリサイズしたときはログ用メッセージ。不要な場合は {@code null}
+     * @return リサイズ案内と差分ピクセル数など
      * @throws IOException 読み込み失敗など
      */
-    public static String writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB) throws IOException {
+    public static MarkedPairResult writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB) throws IOException {
         return writeMarkedPair(pathA, pathB, outA, outB,
                 new DiffSettings(DEFAULT_RGB_SUM_THRESHOLD, RED_ALPHA, MASK_EXPAND_RADIUS, false, true));
     }
 
-    public static String writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB, DiffSettings settings)
+    public static MarkedPairResult writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB, DiffSettings settings)
             throws IOException {
         BufferedImage rawA = ImageIO.read(pathA.toFile());
         BufferedImage rawB = ImageIO.read(pathB.toFile());
@@ -91,6 +111,8 @@ public final class ImageDiffOverlay {
 
         boolean[] mask = buildDiffMask(a, b, w, h, threshold);
         boolean[] expandedMask = expandMask(mask, w, h, expandRadius);
+        int rawDiffPixelCount = countTrue(mask);
+        int expandedDiffPixelCount = countTrue(expandedMask);
         if (outA.getParent() != null) {
             Files.createDirectories(outA.getParent());
         }
@@ -102,7 +124,15 @@ public final class ImageDiffOverlay {
                 : copyArgb(b, w, h);
         ImageIO.write(outImgA, "png", outA.toFile());
         ImageIO.write(outImgB, "png", outB.toFile());
-        return resizeNote;
+        return new MarkedPairResult(resizeNote, rawDiffPixelCount, expandedDiffPixelCount, w, h);
+    }
+
+    private static int countTrue(boolean[] mask) {
+        int n = 0;
+        for (boolean b : mask) {
+            if (b) n++;
+        }
+        return n;
     }
 
     /**
