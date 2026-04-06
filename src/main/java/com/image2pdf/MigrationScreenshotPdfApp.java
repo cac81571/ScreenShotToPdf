@@ -62,7 +62,7 @@ public class MigrationScreenshotPdfApp {
     private JComboBox<String> afterFolderCombo;
     /** PDF作成を実行するボタン */
     private JButton createPdfButton;
-    /** 選択行の A/B 画像に差分マスクを重ねて PNG 保存するボタン */
+    /** 差分PDF作成（ブレンド比較）を実行するボタン */
     private JButton diffOverlayButton;
     /** ログメッセージを表示するテキストエリア */
     private JTextArea logArea;
@@ -78,14 +78,18 @@ public class MigrationScreenshotPdfApp {
     private JTextField afterTitleField;
     /** 差分判定しきい値入力欄（RGB差分合計） */
     private JTextField diffThresholdField;
-    /** 差分マスク赤アルファ入力欄（0.0〜1.0） */
+    /** 差分マスクの赤の不透明度（0.0〜1.0） */
     private JTextField diffAlphaField;
     /** 差分マスク拡張半径入力欄（px） */
     private JTextField diffExpandRadiusField;
-    /** 差分PNGの画像Aに赤マスクを重ねるか */
-    private JCheckBox diffOverlayCheckA;
-    /** 差分PNGの画像Bに赤マスクを重ねるか */
-    private JCheckBox diffOverlayCheckB;
+    /** 「ブレンド表示」グループ: 移行前ページを A/B ブレンドにするか */
+    private JCheckBox diffBlendDisplayBeforeCheck;
+    /** 「ブレンド表示」グループ: 移行後ページを A/B ブレンドにするか */
+    private JCheckBox diffBlendDisplayAfterCheck;
+    /** 「赤マスク」グループ: 移行前ページに重ねるか */
+    private JCheckBox diffRedMaskBeforeCheck;
+    /** 「赤マスク」グループ: 移行後ページに重ねるか */
+    private JCheckBox diffRedMaskAfterCheck;
     /** 画像ファイルAリストに対応するファイルパス（null は空白ページ） */
     private List<Path> beforeFilePaths = new ArrayList<>();
     /** 画像ファイルBリストに対応するファイルパス（null は空白ページ） */
@@ -230,23 +234,29 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * 差分画像保存で使うパラメータ入力欄を作成する。
+     * 差分PDF作成で使うパラメータ入力欄を作成する。
      */
     private JPanel createDiffSettingsPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         diffThresholdField = new JTextField("32", 4);
         diffAlphaField = new JTextField("0.45", 4);
         diffExpandRadiusField = new JTextField("10", 3);
-        diffOverlayCheckA = new JCheckBox("Aにマスク", false);
-        diffOverlayCheckB = new JCheckBox("Bにマスク", true);
+        diffBlendDisplayBeforeCheck = new JCheckBox("移行前", true);
+        diffBlendDisplayAfterCheck = new JCheckBox("移行後", false);
+        diffRedMaskBeforeCheck = new JCheckBox("移行前", false);
+        diffRedMaskAfterCheck = new JCheckBox("移行後", true);
         panel.add(new JLabel("差分しきい値:"));
         panel.add(diffThresholdField);
         panel.add(new JLabel("赤α:"));
         panel.add(diffAlphaField);
         panel.add(new JLabel("マスク拡張:"));
         panel.add(diffExpandRadiusField);
-        panel.add(diffOverlayCheckA);
-        panel.add(diffOverlayCheckB);
+        panel.add(new JLabel("ブレンド表示："));
+        panel.add(diffBlendDisplayBeforeCheck);
+        panel.add(diffBlendDisplayAfterCheck);
+        panel.add(new JLabel("赤マスク表示："));
+        panel.add(diffRedMaskBeforeCheck);
+        panel.add(diffRedMaskAfterCheck);
         return panel;
     }
 
@@ -577,7 +587,7 @@ public class MigrationScreenshotPdfApp {
     }
 
     /**
-     * リスト全件を対象に A/B 画像を比較し、差分オーバーレイ結果を PDF にまとめて保存する。
+     * リスト全件を対象に A/B 画像を比較し、ブレンド表示などの差分結果を PDF にまとめて保存する。
      * 中間画像（PNG）は {@code diff_overlay} フォルダに保存し、PDF は親ディレクトリ直下に作成する。
      */
     private void createDiffOverlayPdf() {
@@ -710,7 +720,7 @@ public class MigrationScreenshotPdfApp {
                     diffOverlayButton.setEnabled(true);
                     log("差分PDFを作成しました: " + pdfPath);
                     log(String.format(Locale.US,
-                            "差分オーバーレイ（A/B 両方）: %d 件 / 片側のみ画像: %d 行 / 両方なし: %d 行 / リサイズ比較: %d 件",
+                            "差分ブレンド比較（A/B ペア）: %d 件 / 片側のみ画像: %d 行 / 両方なし: %d 行 / リサイズ比較: %d 件",
                             finalPaired, finalSingleSide, finalBlankPair, finalResizedCount));
                     for (int i = 0; i < finalMax; i++) {
                         String d = diffSnapshot[i];
@@ -768,7 +778,8 @@ public class MigrationScreenshotPdfApp {
         }
         return new ImageDiffOverlay.DiffSettings(
                 threshold, alpha, expandRadius,
-                diffOverlayCheckA.isSelected(), diffOverlayCheckB.isSelected());
+                diffBlendDisplayBeforeCheck.isSelected(), diffBlendDisplayAfterCheck.isSelected(),
+                diffRedMaskBeforeCheck.isSelected(), diffRedMaskAfterCheck.isSelected());
     }
 
     /**

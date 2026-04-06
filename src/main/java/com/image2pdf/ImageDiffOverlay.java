@@ -9,17 +9,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * 2枚の画像を比較し、差分領域に赤の半透明マスクを重ねた画像を2枚書き出す。
+ * 2枚の画像を比較し、差分領域への赤半透明マスクや A/B ブレンドなど、設定に応じた画像を書き出す。
  * 解像度が異なる場合は画像Aの幅・高さに合わせて画像Bをリサイズしてから比較する。
  */
 public final class ImageDiffOverlay {
 
     /** RGB 各チャンネル差の合計がこの値を超えたら差分とみなす（JPEG の軽いノイズを多少吸収） */
     private static final int DEFAULT_RGB_SUM_THRESHOLD = 32;
-    /** 差分部分に乗せる赤の不透明度 */
-    private static final float RED_ALPHA = 0.45f;
+    /** 差分部分に乗せる赤の不透明度（デフォルト） */
+    private static final float DEFAULT_RED_ALPHA = 0.45f;
     /** 差分マスクを太らせる半径（px）。1 なら 3x3、2 なら 5x5 に広がる。 */
     private static final int MASK_EXPAND_RADIUS = 10;
+    /** ブレンド時の各画像の重み（合計 1.0 で半透明同士の重ね合わせ） */
+    private static final float BLEND_WEIGHT_EACH = 0.5f;
 
     private ImageDiffOverlay() {
     }
@@ -30,7 +32,7 @@ public final class ImageDiffOverlay {
         public final String resizeNote;
         /** しきい値通過の差分ピクセル数（マスク拡張前） */
         public final int rawDiffPixelCount;
-        /** 拡張後マスクで赤が重なるピクセル数（表示と一致） */
+        /** 拡張後マスクの差分ピクセル数（表の「差分」列・統計用） */
         public final int expandedDiffPixelCount;
         public final int width;
         public final int height;
@@ -49,34 +51,42 @@ public final class ImageDiffOverlay {
         public final int rgbSumThreshold;
         public final float redAlpha;
         public final int maskExpandRadius;
-        /** true のとき出力Aに赤半透明マスクを重ねる */
-        public final boolean overlayOnA;
-        /** true のとき出力Bに赤半透明マスクを重ねる */
-        public final boolean overlayOnB;
+        /** true のとき出力A（移行前）を A と B のブレンドで出力する（{@link #redMaskOnA} が true なら無視） */
+        public final boolean blendDisplayOnA;
+        /** true のとき出力B（移行後）を A と B のブレンドで出力する（{@link #redMaskOnB} が true なら無視） */
+        public final boolean blendDisplayOnB;
+        /** true のとき出力A に拡張差分マスクへ赤半透明を重ねる */
+        public final boolean redMaskOnA;
+        /** true のとき出力B に拡張差分マスクへ赤半透明を重ねる */
+        public final boolean redMaskOnB;
 
         public DiffSettings(int rgbSumThreshold, float redAlpha, int maskExpandRadius,
-                boolean overlayOnA, boolean overlayOnB) {
+                boolean blendDisplayOnA, boolean blendDisplayOnB,
+                boolean redMaskOnA, boolean redMaskOnB) {
             this.rgbSumThreshold = rgbSumThreshold;
             this.redAlpha = redAlpha;
             this.maskExpandRadius = maskExpandRadius;
-            this.overlayOnA = overlayOnA;
-            this.overlayOnB = overlayOnB;
+            this.blendDisplayOnA = blendDisplayOnA;
+            this.blendDisplayOnB = blendDisplayOnB;
+            this.redMaskOnA = redMaskOnA;
+            this.redMaskOnB = redMaskOnB;
         }
     }
 
     /**
-     * 画像A・Bを読み込み、同じ差分マスクをそれぞれに重ねた PNG を outA / outB に保存する。
+     * 画像A・Bを読み込み、設定に応じてブレンドまたは元画像の PNG を outA / outB に保存する。
      *
      * @param pathA 画像Aのパス
      * @param pathB 画像Bのパス
-     * @param outA  出力PNG（Aにマスク重ね）
-     * @param outB  出力PNG（Bにマスク重ね。Bをリサイズした場合はその解像度で出力）
+     * @param outA  出力PNG（移行前側）
+     * @param outB  出力PNG（移行後側）
      * @return リサイズ案内と差分ピクセル数など
      * @throws IOException 読み込み失敗など
      */
     public static MarkedPairResult writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB) throws IOException {
         return writeMarkedPair(pathA, pathB, outA, outB,
-                new DiffSettings(DEFAULT_RGB_SUM_THRESHOLD, RED_ALPHA, MASK_EXPAND_RADIUS, false, true));
+                new DiffSettings(DEFAULT_RGB_SUM_THRESHOLD, DEFAULT_RED_ALPHA, MASK_EXPAND_RADIUS,
+                        true, false, false, true));
     }
 
     public static MarkedPairResult writeMarkedPair(Path pathA, Path pathB, Path outA, Path outB, DiffSettings settings)
@@ -101,10 +111,12 @@ public final class ImageDiffOverlay {
         int w = aw;
         int h = ah;
         int threshold = settings == null ? DEFAULT_RGB_SUM_THRESHOLD : settings.rgbSumThreshold;
-        float redAlpha = settings == null ? RED_ALPHA : settings.redAlpha;
+        float redAlpha = settings == null ? DEFAULT_RED_ALPHA : settings.redAlpha;
         int expandRadius = settings == null ? MASK_EXPAND_RADIUS : settings.maskExpandRadius;
-        boolean overlayOnA = settings == null ? false : settings.overlayOnA;
-        boolean overlayOnB = settings == null ? true : settings.overlayOnB;
+        boolean blendOnA = settings == null || settings.blendDisplayOnA;
+        boolean blendOnB = settings == null || settings.blendDisplayOnB;
+        boolean maskOnA = settings != null && settings.redMaskOnA;
+        boolean maskOnB = settings != null && settings.redMaskOnB;
         threshold = Math.max(0, threshold);
         redAlpha = Math.max(0f, Math.min(1f, redAlpha));
         expandRadius = Math.max(0, expandRadius);
@@ -116,12 +128,17 @@ public final class ImageDiffOverlay {
         if (outA.getParent() != null) {
             Files.createDirectories(outA.getParent());
         }
-        BufferedImage outImgA = overlayOnA
+        boolean needBlendA = blendOnA && !maskOnA;
+        boolean needBlendB = blendOnB && !maskOnB;
+        BufferedImage blended = (needBlendA || needBlendB)
+                ? blendSemiTransparent(a, b, w, h, BLEND_WEIGHT_EACH, BLEND_WEIGHT_EACH)
+                : null;
+        BufferedImage outImgA = maskOnA
                 ? applyRedOverlay(a, w, h, expandedMask, redAlpha)
-                : copyArgb(a, w, h);
-        BufferedImage outImgB = overlayOnB
+                : (needBlendA ? blended : copyArgb(a, w, h));
+        BufferedImage outImgB = maskOnB
                 ? applyRedOverlay(b, w, h, expandedMask, redAlpha)
-                : copyArgb(b, w, h);
+                : (needBlendB ? blended : copyArgb(b, w, h));
         ImageIO.write(outImgA, "png", outA.toFile());
         ImageIO.write(outImgB, "png", outB.toFile());
         return new MarkedPairResult(resizeNote, rawDiffPixelCount, expandedDiffPixelCount, w, h);
@@ -203,8 +220,49 @@ public final class ImageDiffOverlay {
         return mask;
     }
 
+    /**
+     * 2枚をアルファブレンド（各ピクセルで weightA・weightB の比率で合成）。weight の合計が 1 のとき不透明度は維持しやすい。
+     */
+    private static BufferedImage blendSemiTransparent(
+            BufferedImage a, BufferedImage b, int w, int h, float weightA, float weightB) {
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        int len = w * h;
+        int[] pa = new int[len];
+        int[] pb = new int[len];
+        a.getRGB(0, 0, w, h, pa, 0, w);
+        b.getRGB(0, 0, w, h, pb, 0, w);
+        int[] dst = new int[len];
+        float sumW = weightA + weightB;
+        if (sumW <= 0f) {
+            sumW = 1f;
+        }
+        for (int i = 0; i < len; i++) {
+            int ca = pa[i];
+            int cb = pb[i];
+            int aa = (ca >>> 24) & 0xff;
+            int ab = (cb >>> 24) & 0xff;
+            float ra = (ca >> 16) & 0xff;
+            float ga = (ca >> 8) & 0xff;
+            float ba = ca & 0xff;
+            float rb = (cb >> 16) & 0xff;
+            float gb = (cb >> 8) & 0xff;
+            float bb = cb & 0xff;
+            float outA = Math.min(255f, Math.round((aa * weightA + ab * weightB) / sumW));
+            float outR = (ra * weightA + rb * weightB) / sumW;
+            float outG = (ga * weightA + gb * weightB) / sumW;
+            float outB = (ba * weightA + bb * weightB) / sumW;
+            int ir = Math.min(255, Math.round(outR));
+            int ig = Math.min(255, Math.round(outG));
+            int ib = Math.min(255, Math.round(outB));
+            int ia = Math.min(255, Math.round(outA));
+            dst[i] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
+        }
+        out.setRGB(0, 0, w, h, dst, 0, w);
+        return out;
+    }
+
     private static BufferedImage applyRedOverlay(
-            BufferedImage baseArgb, int w, int h, boolean[] mask, float redAlpha) {
+            BufferedImage baseArgb, int w, int h, boolean[] diffMask, float redAlpha) {
         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
         int len = w * h;
         int[] src = new int[len];
@@ -213,7 +271,7 @@ public final class ImageDiffOverlay {
         float inv = 1f - a;
         int[] dst = new int[len];
         for (int i = 0; i < len; i++) {
-            if (!mask[i]) {
+            if (!diffMask[i]) {
                 dst[i] = src[i];
                 continue;
             }
